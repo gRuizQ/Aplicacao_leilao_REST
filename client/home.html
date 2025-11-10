@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cliente de Leilão</title>
+  <link rel="stylesheet" href="/client/home.css">
+</head>
+<body>
+  <header>
+    <h1>Aplicação de Leilão - Cliente</h1>
+    <p>Operações via API Gateway e notificações SSE.</p>
+  </header>
+
+  <main>
+    <section id="sec-sse">
+      <h2>Conexão e Notificações</h2>
+      <div class="row">
+        <label for="clientId">Client ID</label>
+        <input id="clientId" placeholder="ex: cliente_001" />
+        <button id="btnConnect">Conectar SSE</button>
+        <span id="connStatus" class="status">desconectado</span>
+      </div>
+      <div id="notifLog" class="log"></div>
+    </section>
+
+    <section id="sec-criar">
+      <h2>Criar Leilão</h2>
+      <form id="formCriar">
+        <div class="row">
+          <label>Produto</label>
+          <input id="nomeProduto" required />
+        </div>
+        <div class="row">
+          <label>Descrição</label>
+          <input id="descricao" />
+        </div>
+        <div class="row">
+          <label>Valor Inicial</label>
+          <input id="valorInicial" type="number" step="0.01" required />
+        </div>
+        <div class="row">
+          <label>Início</label>
+          <input id="dataInicio" type="datetime-local" required />
+        </div>
+        <div class="row">
+          <label>Fim</label>
+          <input id="dataFim" type="datetime-local" required />
+        </div>
+        <button type="submit">Criar</button>
+        <span id="criarStatus" class="status"></span>
+      </form>
+    </section>
+
+    <section id="sec-ativos">
+      <h2>Leilões Ativos</h2>
+      <button id="btnRefresh">Atualizar lista</button>
+      <div id="listaAtivos" class="lista"></div>
+    </section>
+
+    <section id="sec-lance">
+      <h2>Efetuar Lance</h2>
+      <div class="row">
+        <label>Leilão Selecionado</label>
+        <input id="leilaoSelecionado" placeholder="ID do leilão" readonly />
+      </div>
+      <form id="formLance">
+        <div class="row">
+          <label>Seu ID</label>
+          <input id="idUsuario" required />
+        </div>
+        <div class="row">
+          <label>Valor do Lance</label>
+          <input id="valorLance" type="number" step="0.01" required />
+        </div>
+        <button type="submit">Lançar</button>
+        <span id="lanceStatus" class="status"></span>
+      </form>
+    </section>
+  </main>
+
+  <script src="/client/main.js"></script>
+</body>
+</html>
