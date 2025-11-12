@@ -277,10 +277,10 @@ Aplicacao_Leilao_REST/
 2. `ms_pagamento` consome e chama `POST /transacoes` em `sist_pagamento`.
 3. `sist_pagamento` responde com `transaction_id` e `payment_link`.
 4. `ms_pagamento` publica `pagamento_link` (e `link_pagamento` para compatibilidade).
-5. `api_gateway` emite `link_pagamento` via SSE para clientes inscritos.
+5. `api_gateway` emite `link_pagamento` via SSE apenas ao vencedor (`client_id == id_vencedor`).
 6. `sist_pagamento` processa e envia webhook para `ms_pagamento` (`POST /webhook`).
 7. `ms_pagamento` publica `pagamento_status` (e `status_pagamento` para compatibilidade).
-8. `api_gateway` emite `status_pagamento` via SSE.
+8. `api_gateway` emite `status_pagamento` via SSE apenas ao vencedor.
 
 ### Boas Práticas
 - Serviços isolados e de responsabilidade única.
@@ -288,4 +288,5 @@ Aplicacao_Leilao_REST/
 - Estruturas em memória com locks (simples e suficiente para este escopo).
 - Publicação em filas de compatibilidade para evitar quebra de integrações.
  - Eventos críticos distribuídos via exchange `fanout` para evitar competição em uma única fila e garantir entrega a múltiplos serviços.
- - Consumidores críticos com confirmação manual (`auto_ack=False`) e controle de fluxo (`basic_qos`) para processamento confiável.
+- Consumidores críticos com confirmação manual (`auto_ack=False`) e controle de fluxo (`basic_qos`) para processamento confiável.
+ - SSE: para receber eventos de pagamento, o `client_id` do cliente conectado deve ser igual ao `id_usuario` (vencedor) do leilão.

@@ -56,6 +56,8 @@ def iniciar_transacao():
     tx_id = _next_tx_id()
     payment_link = f"http://localhost:5004/pagar/{tx_id}"
 
+    print(f"Transação iniciada: {tx_id} - Valor: {valor} {moeda} - Cliente: {cliente_id} - Leilão: {leilao_id} - Webhook: {webhook_url}")
+
     _transactions[tx_id] = {
         'valor': valor,
         'moeda': moeda,

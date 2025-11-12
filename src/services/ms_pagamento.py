@@ -1,5 +1,6 @@
 import json
 import threading
+import datetime
 from typing import Dict, Any
 
 import pika
@@ -11,55 +12,57 @@ from flask import Flask, request, jsonify, abort
 # ---------------------------------------------
 EXTERNAL_PAYMENT_URL = 'http://localhost:5004'
 WEBHOOK_URL = 'http://localhost:5003/webhook'
+RABBIT_HOST = 'localhost'
 
 app = Flask(__name__)
 
 # ---------------------------------------------
-# RabbitMQ publishers/consumers
+# RabbitMQ publishers
 # ---------------------------------------------
 
-def init_publisher():
+def publish_link_pagamento(id_leilao: str, id_vencedor: str, link: str):
+    """Publica evento de link de pagamento na fila 'link_pagamento'."""
+    message = {
+        'id_leilao': id_leilao,
+        'id_vencedor': id_vencedor,
+        'id_usuario': id_vencedor,  # compat
+        'link_pagamento': link,
+        'timestamp': datetime.datetime.now().isoformat(),
+    }
     try:
-        conn = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
-        ch = conn.channel()
-        # Filas de publicação (compatibilidade com nomes diferentes no gateway)
-        ch.queue_declare(queue='link_pagamento')
-        ch.queue_declare(queue='status_pagamento')
-        # Garante existência da fila consumida pelo serviço
-        ch.queue_declare(queue='leilao_vencedor')
-        return conn, ch
-    except Exception:
-        return None, None
-
-PUB_CONN, PUB_CH = init_publisher()
-_PUB_LOCK = threading.Lock()
+        with pika.BlockingConnection(pika.ConnectionParameters(host=RABBIT_HOST)) as connection:
+            channel = connection.channel()
+            channel.queue_declare(queue='link_pagamento')
+            channel.basic_publish(exchange='', routing_key='link_pagamento', body=json.dumps(message).encode('utf-8'))
+        print(f"[ms_pagamento] Link de pagamento publicado para leilão {id_leilao}")
+    except pika.exceptions.AMQPError as e:
+        print(f"[ms_pagamento] ERRO ao publicar link de pagamento: {e}")
+        raise e
 
 
-def publish(queue_name: str, payload: Dict[str, Any]):
-    """Publica com reconexão e lock para suportar múltiplas threads (webhook/consumidor).
-
-    Em caso de falha (canal fechado/conexão perdida), tenta reestabelecer a conexão
-    e publicar novamente uma única vez. Se persistir erro, ignora para manter serviço REST.
-    """
-    global PUB_CONN, PUB_CH
-    body = json.dumps(payload).encode('utf-8')
-    with _PUB_LOCK:
-        if PUB_CH is None:
-            PUB_CONN, PUB_CH = init_publisher()
-            if PUB_CH is None:
-                return
-        try:
-            PUB_CH.basic_publish(exchange='', routing_key=queue_name, body=body)
-        except Exception:
-            # Tenta reconectar e publicar novamente
-            PUB_CONN, PUB_CH = init_publisher()
-            if PUB_CH is None:
-                return
-            try:
-                PUB_CH.basic_publish(exchange='', routing_key=queue_name, body=body)
-            except Exception:
-                # Falha persistente é ignorada para não derrubar o serviço
-                return
+def publish_status_pagamento(id_leilao: str, id_vencedor: str, status: str, valor: float):
+    """Publica evento de status de pagamento na fila 'status_pagamento'."""
+    message = {
+        'id_leilao': id_leilao,
+        'id_vencedor': id_vencedor,
+        'cliente_id': id_vencedor,  # compat
+        'status': status,
+        'valor': valor,
+        'timestamp': datetime.datetime.now().isoformat(),
+    }
+    try:
+        with pika.BlockingConnection(pika.ConnectionParameters(host=RABBIT_HOST)) as connection:
+            channel = connection.channel()
+            channel.queue_declare(queue='status_pagamento')
+            channel.basic_publish(
+                exchange='',
+                routing_key='status_pagamento',
+                body=json.dumps(message).encode('utf-8')
+            )
+        print(f"[ms_pagamento] Status de pagamento '{status}' publicado para leilão {id_leilao}")
+    except pika.exceptions.AMQPError as e:
+        print(f"[ms_pagamento] ERRO ao publicar status de pagamento: {e}")
+        raise e
 
 
 # ---------------------------------------------
@@ -104,27 +107,17 @@ def on_leilao_vencedor(ch, method, properties, body):
         return
 
     if not transaction_id or not payment_link:
-        try:
-            ch.basic_ack(delivery_tag=method.delivery_tag)
-        except Exception:
-            pass
+        ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
-    event = {
-        'id_leilao': id_leilao,
-        'id_usuario': id_usuario,
-        'valor': valor,
-        'moeda': 'BRL',
-        'transaction_id': transaction_id,
-        'payment_link': payment_link,
-    }
-
-    # Publica na fila de link de pagamento
-    publish('link_pagamento', event)
+    # Publica link de pagamento
     try:
-        ch.basic_ack(delivery_tag=method.delivery_tag)
+        publish_link_pagamento(id_leilao=id_leilao, id_vencedor=id_usuario, link=payment_link)
     except Exception:
-        pass
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+        return
+    
+    ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
 def start_consumer():
@@ -166,16 +159,8 @@ def pagamento_webhook():
     if not all([id_transacao, status]):
         abort(400, description='Campos obrigatórios: id_transacao, status')
 
-    event = {
-        'id_transacao': id_transacao,
-        'status': status,
-        'valor': valor,
-        'cliente_id': cliente_id,
-        'leilao_id': leilao_id,
-    }
 
-    # Publica na fila de status de pagamento
-    publish('status_pagamento', event)
+    publish_status_pagamento(id_leilao=leilao_id or '', id_vencedor=cliente_id or '', status=status, valor=valor or 0.0)
 
     return jsonify({'ok': True})
 
