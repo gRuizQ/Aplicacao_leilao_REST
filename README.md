@@ -288,5 +288,7 @@ Aplicacao_Leilao_REST/
 - Estruturas em memória com locks (simples e suficiente para este escopo).
 - Publicação em filas de compatibilidade para evitar quebra de integrações.
  - Eventos críticos distribuídos via exchange `fanout` para evitar competição em uma única fila e garantir entrega a múltiplos serviços.
-- Consumidores críticos com confirmação manual (`auto_ack=False`) e controle de fluxo (`basic_qos`) para processamento confiável.
+ - Consumidores críticos com confirmação manual (`auto_ack=False`) e controle de fluxo (`basic_qos`) para processamento confiável.
+ - Consumidores do API Gateway com reconexão automática ao RabbitMQ (backoff + logs de inicialização/erro), evitando falhas silenciosas.
+ - SSE de pagamento: eventos `link_pagamento` e `status_pagamento` são emitidos apenas ao vencedor (`client_id == id_vencedor`).
  - SSE: para receber eventos de pagamento, o `client_id` do cliente conectado deve ser igual ao `id_usuario` (vencedor) do leilão.

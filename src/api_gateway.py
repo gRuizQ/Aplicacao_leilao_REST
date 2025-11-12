@@ -82,6 +82,7 @@ def notify_clients(leilao_id: str, event_type: str, payload: Dict[str, Any], onl
         if q:
             try:
                 q.put_nowait(msg)
+                print(f"Enviado para {cid}: {msg.strip()}")
             except queue.Full:
                 # Se a fila estiver cheia, descarta silenciosamente para proteger o gateway
                 pass
@@ -296,169 +297,184 @@ _heartbeat_thread.start()
 # ---------------------------------------------
 
 def start_event_consumers():
-    try:
-        conn = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
-        ch = conn.channel()
-        # Declara filas de interesse
-        ch.queue_declare(queue='lance_validado')
-        ch.queue_declare(queue='lance_invalidado')
-        # Exchange fanout para vencedores; gateway usa fila exclusiva
-        ch.exchange_declare(exchange='vencedores_exchange', exchange_type='fanout')
-        result = ch.queue_declare(queue='', exclusive=True)
-        _fila_vencedores_gateway = result.method.queue
-        ch.queue_bind(exchange='vencedores_exchange', queue=_fila_vencedores_gateway)
-        # Pagamento (se existir)
-        ch.queue_declare(queue='link_pagamento')
-        ch.queue_declare(queue='status_pagamento')
-        ch.basic_qos(prefetch_count=1)
+    # Loop de reconexão para evitar falhas silenciosas caso o RabbitMQ esteja indisponível
+    while True:
+        try:
+            print("ApiGateway: Inicializando consumidores de eventos...")
+            conn = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+            ch = conn.channel()
+            # Declara filas de interesse
+            ch.queue_declare(queue='lance_validado')
+            ch.queue_declare(queue='lance_invalidado')
+            # Exchange fanout para vencedores; gateway usa fila exclusiva
+            ch.exchange_declare(exchange='vencedores_exchange', exchange_type='fanout')
+            result = ch.queue_declare(queue='', exclusive=True)
+            _fila_vencedores_gateway = result.method.queue
+            ch.queue_bind(exchange='vencedores_exchange', queue=_fila_vencedores_gateway)
+            # Pagamento (se existir)
+            ch.queue_declare(queue='link_pagamento')
+            ch.queue_declare(queue='status_pagamento')
+            ch.basic_qos(prefetch_count=1)
 
-        def cb_lance_validado(ch_, method, properties, body):
-            try:
-                data = json.loads(body.decode('utf-8'))
-                lid = data.get('id_leilao')
-                valor = data.get('valor_do_lance')
-
-                print(f"ApiGateway: Lance válido recebido para leilão {lid}: {data}")
-
-                if lid and isinstance(valor, (int, float)):
-                    with _lock:
-                        ultimo_valor_por_leilao[lid] = float(valor)
-                # Enriquecer payload com nome e tempo restante
-                descricao = None
-                tempo_restante_segundos = None
-                with _lock:
-                    meta = leilao_meta.get(lid) or {}
-                    descricao = meta.get('descricao')
-                    df_s = meta.get('data_fim')
-                if df_s:
-                    try:
-                        df = datetime.datetime.fromisoformat(df_s)
-                        now = datetime.datetime.now(df.tzinfo) if df.tzinfo else datetime.datetime.now()
-                        tempo_restante_segundos = int((df - now).total_seconds())
-                        if tempo_restante_segundos < 0:
-                            tempo_restante_segundos = 0
-                    except Exception:
-                        tempo_restante_segundos = None
-
-                enriched = dict(data)
-                if descricao is not None:
-                    enriched['nome'] = descricao
-                enriched['tempo_restante_segundos'] = tempo_restante_segundos
-                notify_clients(lid, 'lance', enriched, only_registered=True)
-
-                print(f"ApiGateway: Notificado lance válido para leilão {lid}: {data}")
-                
-                ch_.basic_ack(delivery_tag=method.delivery_tag)
-
-            except Exception as e:
-                print(f"ApiGateway: Erro ao processar lance válido para leilão {lid}: {e}")
-                ch_.basic_ack(delivery_tag=method.delivery_tag)
-
-        def cb_lance_invalidado(ch_, method, properties, body):
-            try:
-                data = json.loads(body.decode('utf-8'))
-                lid = data.get('id_leilao')
-                notify_clients(lid, 'lance_invalido', data, only_registered=False)
-                ch_.basic_ack(delivery_tag=method.delivery_tag)
-            except Exception as e:
-                print(f"ApiGateway: Erro ao processar lance inválido para leilão {lid}: {e}")
-                ch_.basic_ack(delivery_tag=method.delivery_tag)
-
-        def cb_leilao_vencedor(ch_, method, properties, body):
-            try:
-                data = json.loads(body.decode('utf-8'))
-                lid = data.get('id_leilao')
-
-                print(f"ApiGateway: Recebido vencedor para leilão {lid}: {data.get('id_usuario')}")
-                # Enriquecer com nome do leilão, se disponível
-                enriched = dict(data)
+            def cb_lance_validado(ch_, method, properties, body):
                 try:
+                    data = json.loads(body.decode('utf-8'))
+                    lid = data.get('id_leilao')
+                    valor = data.get('valor_do_lance')
+
+                    print(f"ApiGateway: Lance válido recebido para leilão {lid}: {data}")
+
+                    if lid and isinstance(valor, (int, float)):
+                        with _lock:
+                            ultimo_valor_por_leilao[lid] = float(valor)
+                    # Enriquecer payload com nome e tempo restante
+                    descricao = None
+                    tempo_restante_segundos = None
                     with _lock:
                         meta = leilao_meta.get(lid) or {}
-                        if meta.get('descricao'):
-                            enriched['nome'] = meta['descricao']
-                except Exception:
-                    pass
+                        descricao = meta.get('descricao')
+                        df_s = meta.get('data_fim')
+                    if df_s:
+                        try:
+                            df = datetime.datetime.fromisoformat(df_s)
+                            now = datetime.datetime.now(df.tzinfo) if df.tzinfo else datetime.datetime.now()
+                            tempo_restante_segundos = int((df - now).total_seconds())
+                            if tempo_restante_segundos < 0:
+                                tempo_restante_segundos = 0
+                        except Exception:
+                            tempo_restante_segundos = None
 
-                notify_clients(lid, 'vencedor', enriched, only_registered=True)
-                print(f"ApiGateway: Notificado vencedor para leilão {lid}: {data.get('id_usuario')}")
-                ch_.basic_ack(delivery_tag=method.delivery_tag)
-                
-            except Exception as e:
-                print(f"ApiGateway: Erro ao processar vencedor para leilão {lid}: {e}")
-                ch_.basic_ack(delivery_tag=method.delivery_tag)
+                    enriched = dict(data)
+                    if descricao is not None:
+                        enriched['nome'] = descricao
+                    enriched['tempo_restante_segundos'] = tempo_restante_segundos
 
+                    notify_clients(lid, 'lance', enriched, only_registered=True)
 
-        def cb_pagamento_link(ch_, method, properties, body):
-            try:
-                data = json.loads(body.decode('utf-8'))
-                id_vencedor = data.get('id_vencedor') or data.get('id_usuario')
-                leilao_id = data.get('id_leilao') or data.get('leilao_id')
-
-                if not id_vencedor:
-                    print(f"ApiGateway: Link de pagamento sem id_vencedor: {data}")
+                    print(f"ApiGateway: Notificado lance válido para leilão {lid}: {data}")
+                    
                     ch_.basic_ack(delivery_tag=method.delivery_tag)
-                    return
 
-                # Normaliza payload do link para compatibilidade
-                link = data.get('link_pagamento') or data.get('payment_link')
-                enriched = dict(data)
-                if link is not None:
-                    enriched['link_pagamento'] = link
-                    enriched['payment_link'] = link
-
-                # Entrega apenas ao ganhador, usando client_id == id_vencedor
-                q = sse_clients.get(id_vencedor)
-                if q:
-                    try:
-                        q.put_nowait(sse_format('link_pagamento', enriched))
-                        print(f"API Gateway: Link de pagamento enviado ao vencedor {id_vencedor} do leilão {leilao_id}")
-                    except queue.Full:
-                        print(f"API Gateway: Fila SSE cheia para vencedor {id_vencedor}")
-                else:
-                    print(f"API Gateway: Nenhuma conexão SSE encontrada para vencedor {id_vencedor}. Link não entregue.")
-                ch_.basic_ack(delivery_tag=method.delivery_tag)
-            except Exception as e:
-                print(f"ApiGateway: Erro ao processar link de pagamento: {e}")
-                ch_.basic_ack(delivery_tag=method.delivery_tag)
-
-        def cb_pagamento_status(ch_, method, properties, body):
-            try:
-                data = json.loads(body.decode('utf-8'))
-                id_vencedor = data.get('id_vencedor') or data.get('id_usuario')
-                leilao_id = data.get('id_leilao') or data.get('leilao_id')
-
-                if not id_vencedor:
-                    print(f"ApiGateway: Status de pagamento sem id_vencedor: {data}")
+                except Exception as e:
+                    print(f"ApiGateway: Erro ao processar lance válido para leilão {lid}: {e}")
                     ch_.basic_ack(delivery_tag=method.delivery_tag)
-                    return
 
-                q = sse_clients.get(id_vencedor)
-                if q:
+            def cb_lance_invalidado(ch_, method, properties, body):
+                try:
+                    data = json.loads(body.decode('utf-8'))
+                    lid = data.get('id_leilao')
+
+                    print(f"ApiGateway: Lance inválido recebido para leilão {lid}: {data}")
+
+                    notify_clients(lid, 'lance_invalido', data, only_registered=False)
+
+                    print(f"ApiGateway: Notificado lance inválido para leilão {lid}: {data}")
+
+                    ch_.basic_ack(delivery_tag=method.delivery_tag)
+                except Exception as e:
+                    print(f"ApiGateway: Erro ao processar lance inválido para leilão {lid}: {e}")
+                    ch_.basic_ack(delivery_tag=method.delivery_tag)
+
+            def cb_leilao_vencedor(ch_, method, properties, body):
+                try:
+                    data = json.loads(body.decode('utf-8'))
+                    lid = data.get('id_leilao')
+
+                    print(f"ApiGateway: Recebido vencedor para leilão {lid}: {data.get('id_usuario')}")
+                    # Enriquecer com nome do leilão, se disponível
+                    enriched = dict(data)
                     try:
-                        q.put_nowait(sse_format('status_pagamento', data))
-                        print(f"API Gateway: Status de pagamento enviado ao vencedor {id_vencedor} do leilão {leilao_id}")
-                    except queue.Full:
-                        print(f"API Gateway: Fila SSE cheia para vencedor {id_vencedor}")
-                else:
-                    print(f"API Gateway: Nenhuma conexão SSE encontrada para vencedor {id_vencedor}. Status não entregue.")
-                ch_.basic_ack(delivery_tag=method.delivery_tag)
-            except Exception as e:
-                print(f"ApiGateway: Erro ao processar status de pagamento: {e}")
-                ch_.basic_ack(delivery_tag=method.delivery_tag)
+                        with _lock:
+                            meta = leilao_meta.get(lid) or {}
+                            if meta.get('descricao'):
+                                enriched['nome'] = meta['descricao']
+                    except Exception:
+                        pass
+
+                    notify_clients(lid, 'vencedor', enriched, only_registered=True)
+                    
+                    print(f"ApiGateway: Notificado vencedor para leilão {lid}: {data.get('id_usuario')}")
+
+                    ch_.basic_ack(delivery_tag=method.delivery_tag)
+                    
+                except Exception as e:
+                    print(f"ApiGateway: Erro ao processar vencedor para leilão {lid}: {e}")
+                    ch_.basic_ack(delivery_tag=method.delivery_tag)
 
 
-        ch.basic_consume(queue='lance_validado', on_message_callback=cb_lance_validado, auto_ack=False)
-        ch.basic_consume(queue='lance_invalidado', on_message_callback=cb_lance_invalidado, auto_ack=False)
-        # Consome vencedores via exchange fanout com confirmação manual
-        ch.basic_consume(queue=_fila_vencedores_gateway, on_message_callback=cb_leilao_vencedor, auto_ack=False)
-        ch.basic_consume(queue='link_pagamento', on_message_callback=cb_pagamento_link, auto_ack=False)
-        ch.basic_consume(queue='status_pagamento', on_message_callback=cb_pagamento_status, auto_ack=False)
+            def cb_pagamento_link(ch_, method, properties, body):
+                try:
+                    data = json.loads(body.decode('utf-8'))
+                    id_vencedor = data.get('id_vencedor') or data.get('id_usuario')
+                    leilao_id = data.get('id_leilao') or data.get('leilao_id')
 
-        ch.start_consuming()
-    except Exception:
-        # Se RabbitMQ estiver indisponível, o gateway continua servindo REST/SSE sem eventos
-        pass
+                    if not id_vencedor:
+                        print(f"ApiGateway: Link de pagamento sem id_vencedor: {data}")
+                        ch_.basic_ack(delivery_tag=method.delivery_tag)
+                        return
+
+                    # Normaliza payload do link para compatibilidade
+                    link = data.get('link_pagamento') or data.get('payment_link')
+                    enriched = dict(data)
+                    if link is not None:
+                        enriched['link_pagamento'] = link
+                        enriched['payment_link'] = link
+
+                    # Entrega apenas ao ganhador, usando client_id == id_vencedor
+                    q = sse_clients.get(id_vencedor)
+                    if q:
+                        try:
+                            q.put_nowait(sse_format('link_pagamento', enriched))
+                            print(f"API Gateway: Link de pagamento enviado ao vencedor {id_vencedor} do leilão {leilao_id}")
+                        except queue.Full:
+                            print(f"API Gateway: Fila SSE cheia para vencedor {id_vencedor}")
+                    else:
+                        print(f"API Gateway: Nenhuma conexão SSE encontrada para vencedor {id_vencedor}. Link não entregue.")
+                    ch_.basic_ack(delivery_tag=method.delivery_tag)
+                except Exception as e:
+                    print(f"ApiGateway: Erro ao processar link de pagamento: {e}")
+                    ch_.basic_ack(delivery_tag=method.delivery_tag)
+
+            def cb_pagamento_status(ch_, method, properties, body):
+                try:
+                    data = json.loads(body.decode('utf-8'))
+                    id_vencedor = data.get('id_vencedor') or data.get('id_usuario')
+                    leilao_id = data.get('id_leilao') or data.get('leilao_id')
+
+                    if not id_vencedor:
+                        print(f"ApiGateway: Status de pagamento sem id_vencedor: {data}")
+                        ch_.basic_ack(delivery_tag=method.delivery_tag)
+                        return
+
+                    q = sse_clients.get(id_vencedor)
+                    if q:
+                        try:
+                            q.put_nowait(sse_format('status_pagamento', data))
+                            print(f"API Gateway: Status de pagamento enviado ao vencedor {id_vencedor} do leilão {leilao_id}")
+                        except queue.Full:
+                            print(f"API Gateway: Fila SSE cheia para vencedor {id_vencedor}")
+                    else:
+                        print(f"API Gateway: Nenhuma conexão SSE encontrada para vencedor {id_vencedor}. Status não entregue.")
+                    ch_.basic_ack(delivery_tag=method.delivery_tag)
+                except Exception as e:
+                    print(f"ApiGateway: Erro ao processar status de pagamento: {e}")
+                    ch_.basic_ack(delivery_tag=method.delivery_tag)
+
+
+            ch.basic_consume(queue='lance_validado', on_message_callback=cb_lance_validado, auto_ack=False)
+            ch.basic_consume(queue='lance_invalidado', on_message_callback=cb_lance_invalidado, auto_ack=False)
+            # Consome vencedores via exchange fanout com confirmação manual
+            ch.basic_consume(queue=_fila_vencedores_gateway, on_message_callback=cb_leilao_vencedor, auto_ack=False)
+            ch.basic_consume(queue='link_pagamento', on_message_callback=cb_pagamento_link, auto_ack=False)
+            ch.basic_consume(queue='status_pagamento', on_message_callback=cb_pagamento_status, auto_ack=False)
+
+            print("ApiGateway: Consumidores conectados ao RabbitMQ e em execução.")
+            ch.start_consuming()
+        except Exception as e:
+            # Se RabbitMQ estiver indisponível ou ocorrer falha, loga e re-tenta após um breve intervalo
+            print(f"ApiGateway: Erro ao iniciar consumidores de eventos: {e}. Tentando novamente em 5s...")
+            time.sleep(5)
+            
 
 _event_thread = threading.Thread(target=start_event_consumers, daemon=True)
 _event_thread.start()
