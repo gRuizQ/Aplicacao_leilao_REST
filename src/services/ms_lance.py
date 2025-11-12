@@ -44,6 +44,8 @@ def init_consumer():
         ch.queue_declare(queue='leilao_finalizado')
         # Também pode publicar vencedor a partir do mesmo canal
         ch.queue_declare(queue='leilao_vencedor')
+        # Exchange fanout para distribuição do vencedor para múltiplos serviços
+        ch.exchange_declare(exchange='vencedores_exchange', exchange_type='fanout')
         return conn, ch
     except Exception:
         return None, None
@@ -116,8 +118,15 @@ def on_leilao_finalizado(ch, method, properties, body):
         'id_usuario': vencedor['id_usuario'] if vencedor else 'ninguem',
         'valor_do_lance': vencedor['valor_do_lance'] if vencedor else 0.0,
     }
-    # Usa o canal do consumer para evitar concorrência entre threads
-    ch.basic_publish(exchange='', routing_key='leilao_vencedor', body=json.dumps(msg).encode('utf-8'))
+    body_bytes = json.dumps(msg).encode('utf-8')
+    # Publica na fila legada (compatibilidade)
+    ch.basic_publish(exchange='', routing_key='leilao_vencedor', body=body_bytes)
+    # Publica no exchange fanout para que múltiplos serviços recebam
+    try:
+        ch.basic_publish(exchange='vencedores_exchange', routing_key='', body=body_bytes)
+    except Exception:
+        # Se exchange não estiver disponível, seguimos com a fila legada
+        pass
 
 
 def start_consumers():

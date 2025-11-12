@@ -35,6 +35,8 @@ Arquitetura focada em código essencial, separação de responsabilidades e manu
 - Notificação `vencedor` enriquecida com `nome` do leilão quando disponível.
 - Frontend atualiza automaticamente a lista de leilões ao receber `vencedor`.
 - Validação de permissões de cliente no `ms_lance` (stub simples) antes de aceitar lances.
+ - Distribuição de `leilao_vencedor` via RabbitMQ `fanout` (`vencedores_exchange`), com publicação em exchange no `ms_lance` e filas exclusivas por instância no `api_gateway` e `ms_pagamento`.
+ - Consumidores de vencedor com `basic_qos(prefetch_count=1)`, `auto_ack=False`, `basic_ack` após sucesso e `basic_nack(..., requeue=True)` em falhas para maior confiabilidade.
 
 ## 4. Pré-requisitos
 - Python 3.10+
@@ -285,3 +287,5 @@ Aplicacao_Leilao_REST/
 - Threads dedicadas para consumo de eventos e manutenção de SSE.
 - Estruturas em memória com locks (simples e suficiente para este escopo).
 - Publicação em filas de compatibilidade para evitar quebra de integrações.
+ - Eventos críticos distribuídos via exchange `fanout` para evitar competição em uma única fila e garantir entrega a múltiplos serviços.
+ - Consumidores críticos com confirmação manual (`auto_ack=False`) e controle de fluxo (`basic_qos`) para processamento confiável.

@@ -302,10 +302,15 @@ def start_event_consumers():
         # Declara filas de interesse
         ch.queue_declare(queue='lance_validado')
         ch.queue_declare(queue='lance_invalidado')
-        ch.queue_declare(queue='leilao_vencedor')
+        # Exchange fanout para vencedores; gateway usa fila exclusiva
+        ch.exchange_declare(exchange='vencedores_exchange', exchange_type='fanout')
+        result = ch.queue_declare(queue='', exclusive=True)
+        _fila_vencedores_gateway = result.method.queue
+        ch.queue_bind(exchange='vencedores_exchange', queue=_fila_vencedores_gateway)
         # Pagamento (se existir)
-        ch.queue_declare(queue='pagamento_link')
-        ch.queue_declare(queue='pagamento_status')
+        ch.queue_declare(queue='link_pagamento')
+        ch.queue_declare(queue='status_pagamento')
+        ch.basic_qos(prefetch_count=1)
 
         def cb_lance_validado(ch_, method, properties, body):
             try:
@@ -337,21 +342,28 @@ def start_event_consumers():
                     enriched['nome'] = descricao
                 enriched['tempo_restante_segundos'] = tempo_restante_segundos
                 notify_clients(lid, 'lance', enriched, only_registered=True)
-            except Exception:
-                pass
+                ch_.basic_ack(delivery_tag=method.delivery_tag)
+
+            except Exception as e:
+                print(f"ApiGateway: Erro ao processar lance válido para leilão {lid}: {e}")
+                ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
         def cb_lance_invalidado(ch_, method, properties, body):
             try:
                 data = json.loads(body.decode('utf-8'))
                 lid = data.get('id_leilao')
                 notify_clients(lid, 'lance_invalido', data, only_registered=False)
-            except Exception:
-                pass
+                ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            except Exception as e:
+                print(f"ApiGateway: Erro ao processar lance inválido para leilão {lid}: {e}")
+                ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
         def cb_leilao_vencedor(ch_, method, properties, body):
             try:
                 data = json.loads(body.decode('utf-8'))
                 lid = data.get('id_leilao')
+
+                print(f"ApiGateway: Recebido vencedor para leilão {lid}: {data.get('id_usuario')}")
                 # Enriquecer com nome do leilão, se disponível
                 enriched = dict(data)
                 try:
@@ -361,31 +373,39 @@ def start_event_consumers():
                             enriched['nome'] = meta['descricao']
                 except Exception:
                     pass
+
                 notify_clients(lid, 'vencedor', enriched, only_registered=True)
-            except Exception:
-                pass
+                ch_.basic_ack(delivery_tag=method.delivery_tag)
+                
+            except Exception as e:
+                print(f"ApiGateway: Erro ao processar vencedor para leilão {lid}: {e}")
+                ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+
 
         def cb_pagamento_link(ch_, method, properties, body):
             try:
                 data = json.loads(body.decode('utf-8'))
                 lid = data.get('id_leilao')
                 notify_clients(lid, 'link_pagamento', data, only_registered=True)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"ApiGateway: Erro ao processar link de pagamento para leilão {lid}: {e}")
+                ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
         def cb_pagamento_status(ch_, method, properties, body):
             try:
                 data = json.loads(body.decode('utf-8'))
                 lid = data.get('id_leilao')
                 notify_clients(lid, 'status_pagamento', data, only_registered=True)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"ApiGateway: Erro ao processar status de pagamento para leilão {lid}: {e}")
+                ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
-        ch.basic_consume(queue='lance_validado', on_message_callback=cb_lance_validado, auto_ack=True)
-        ch.basic_consume(queue='lance_invalidado', on_message_callback=cb_lance_invalidado, auto_ack=True)
-        ch.basic_consume(queue='leilao_vencedor', on_message_callback=cb_leilao_vencedor, auto_ack=True)
-        ch.basic_consume(queue='pagamento_link', on_message_callback=cb_pagamento_link, auto_ack=True)
-        ch.basic_consume(queue='pagamento_status', on_message_callback=cb_pagamento_status, auto_ack=True)
+        ch.basic_consume(queue='lance_validado', on_message_callback=cb_lance_validado, auto_ack=False)
+        ch.basic_consume(queue='lance_invalidado', on_message_callback=cb_lance_invalidado, auto_ack=False)
+        # Consome vencedores via exchange fanout com confirmação manual
+        ch.basic_consume(queue=_fila_vencedores_gateway, on_message_callback=cb_leilao_vencedor, auto_ack=False)
+        ch.basic_consume(queue='link_pagamento', on_message_callback=cb_pagamento_link, auto_ack=False)
+        ch.basic_consume(queue='status_pagamento', on_message_callback=cb_pagamento_status, auto_ack=False)
 
         ch.start_consuming()
     except Exception:
