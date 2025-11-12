@@ -65,6 +65,21 @@ def publish_pub(queue_name: str, payload: Dict[str, Any]):
 
 
 # ---------------------------------------------
+# Permissões (stub substituível por serviço externo futuramente)
+# ---------------------------------------------
+
+def has_valid_permission(user_id: str) -> bool:
+    """
+    Verifica se o usuário possui permissões válidas para efetuar lance.
+    Implementação atual é um stub simples para facilitar substituição por
+    um serviço de autenticação/autorização no futuro.
+
+    Regra atual: user_id deve ser uma string não vazia iniciando com 'client_'.
+    """
+    return isinstance(user_id, str) and user_id.strip().startswith('client_')
+
+
+# ---------------------------------------------
 # Consumers: leilao_iniciado e leilao_finalizado
 # ---------------------------------------------
 
@@ -149,6 +164,16 @@ def receber_lance():
             }
             publish_pub('lance_invalidado', msg_inv)
             return jsonify({'status': 'invalidado', 'motivo': 'leilao_inativo'}), 400
+
+        # Verificação de permissões do usuário
+        if not has_valid_permission(id_usuario):
+            msg_inv = {
+                'id_leilao': id_leilao,
+                'id_usuario': id_usuario,
+                'valor_do_lance': valor_do_lance,
+            }
+            publish_pub('lance_invalidado', msg_inv)
+            return jsonify({'status': 'invalidado', 'motivo': 'sem_permissao'}), 403
 
         ultimo_valor = (ultimos_lances.get(id_leilao) or {}).get('valor_do_lance', float('-inf'))
         if valor_do_lance <= ultimo_valor:

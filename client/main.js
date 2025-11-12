@@ -64,6 +64,8 @@ function connectSSE() {
   es.addEventListener('vencedor', (e) => {
     const data = JSON.parse(e.data);
     log(`Leilão ${data.id_leilao} vencedor: ${data.id_usuario} (R$ ${data.valor_do_lance})`, 'vencedor');
+    // Atualiza a lista de leilões para refletir o encerramento
+    listarAtivos();
   });
   es.addEventListener('link_pagamento', (e) => {
     const data = JSON.parse(e.data);

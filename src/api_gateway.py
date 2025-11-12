@@ -1,4 +1,5 @@
 import json
+import datetime
 import threading
 import time
 import queue
@@ -44,6 +45,9 @@ sse_clients: Dict[str, queue.Queue] = {}
 
 # Último valor de lance por leilão (alimentado pelos eventos)
 ultimo_valor_por_leilao: Dict[str, float] = {}
+
+# Metadados dos leilões (cacheados a partir dos eventos do MS Leilão)
+leilao_meta: Dict[str, Dict[str, Any]] = {}
 
 _lock = threading.Lock()
 
@@ -311,7 +315,28 @@ def start_event_consumers():
                 if lid and isinstance(valor, (int, float)):
                     with _lock:
                         ultimo_valor_por_leilao[lid] = float(valor)
-                notify_clients(lid, 'lance', data, only_registered=True)
+                # Enriquecer payload com nome e tempo restante
+                descricao = None
+                tempo_restante_segundos = None
+                with _lock:
+                    meta = leilao_meta.get(lid) or {}
+                    descricao = meta.get('descricao')
+                    df_s = meta.get('data_fim')
+                if df_s:
+                    try:
+                        df = datetime.datetime.fromisoformat(df_s)
+                        now = datetime.datetime.now(df.tzinfo) if df.tzinfo else datetime.datetime.now()
+                        tempo_restante_segundos = int((df - now).total_seconds())
+                        if tempo_restante_segundos < 0:
+                            tempo_restante_segundos = 0
+                    except Exception:
+                        tempo_restante_segundos = None
+
+                enriched = dict(data)
+                if descricao is not None:
+                    enriched['nome'] = descricao
+                enriched['tempo_restante_segundos'] = tempo_restante_segundos
+                notify_clients(lid, 'lance', enriched, only_registered=True)
             except Exception:
                 pass
 
@@ -327,7 +352,16 @@ def start_event_consumers():
             try:
                 data = json.loads(body.decode('utf-8'))
                 lid = data.get('id_leilao')
-                notify_clients(lid, 'vencedor', data, only_registered=True)
+                # Enriquecer com nome do leilão, se disponível
+                enriched = dict(data)
+                try:
+                    with _lock:
+                        meta = leilao_meta.get(lid) or {}
+                        if meta.get('descricao'):
+                            enriched['nome'] = meta['descricao']
+                except Exception:
+                    pass
+                notify_clients(lid, 'vencedor', enriched, only_registered=True)
             except Exception:
                 pass
 

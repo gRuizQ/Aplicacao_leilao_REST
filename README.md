@@ -29,6 +29,13 @@ Arquitetura focada em código essencial, separação de responsabilidades e manu
   - `status_pagamento`: resultado do pagamento (`aprovado`/`recusado`)
   - `connected` e `ping` (manutenção de conexão)
 
+### Atualizações recentes
+- Enriquecimento das notificações `lance` no SSE com `nome` do leilão e `tempo_restante_segundos`.
+- Cache de metadados de leilões no gateway a partir dos eventos `leilao_iniciado`/`leilao_finalizado`.
+- Notificação `vencedor` enriquecida com `nome` do leilão quando disponível.
+- Frontend atualiza automaticamente a lista de leilões ao receber `vencedor`.
+- Validação de permissões de cliente no `ms_lance` (stub simples) antes de aceitar lances.
+
 ## 4. Pré-requisitos
 - Python 3.10+
 - `pip` para instalar dependências
@@ -137,7 +144,7 @@ curl -X POST http://localhost:5000/lances \
   -H "Content-Type: application/json" \
   -d '{
     "id_leilao": "leilao_01",
-    "id_usuario": "user_123",
+    "id_usuario": "client_123",
     "valor_do_lance": 1200.00
   }'
 ```
@@ -146,7 +153,7 @@ Resposta (201, válido):
 {
   "status": "validado",
   "id_leilao": "leilao_01",
-  "id_usuario": "user_123",
+  "id_usuario": "client_123",
   "valor_do_lance": 1200.0
 }
 ```
