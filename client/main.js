@@ -27,6 +27,15 @@ function log(msg, kind = 'info') {
   $('notifLog').prepend(el);
 }
 
+// Mantém a mensagem de status visível até o usuário digitar novamente
+function persistStatusUntilInput(formEl, statusEl) {
+  if (!formEl || !statusEl) return;
+  // Limpa o status no primeiro input após a submissão
+  formEl.addEventListener('input', () => {
+    statusEl.textContent = '';
+  }, { once: true });
+}
+
 async function api(method, path, body) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
@@ -88,7 +97,9 @@ function connectSSE() {
 // Criar leilão
 async function criarLeilao(ev) {
   ev.preventDefault();
-  $('criarStatus').textContent = '';
+  const form = $('formCriar');
+  const statusEl = $('criarStatus');
+  statusEl.textContent = '';
   try {
     const body = {
       nome_produto: $('nomeProduto').value.trim(),
@@ -98,10 +109,18 @@ async function criarLeilao(ev) {
       data_fim: fmtISO($('dataFim').value),
     };
     const resp = await api('POST', '/leiloes', body);
-    $('criarStatus').textContent = `Criado: ${resp.id || ''}`;
+    statusEl.textContent = `Criado: ${resp.id || ''}`;
+    // Reset de todos os campos após sucesso
+    form?.reset();
+    // Conveniência: foca no primeiro campo para nova entrada
+    $('nomeProduto')?.focus();
+    // Mantém a mensagem de sucesso até o usuário começar a digitar de novo
+    persistStatusUntilInput(form, statusEl);
     await listarAtivos();
   } catch (e) {
-    $('criarStatus').textContent = `Erro: ${e.message}`;
+    statusEl.textContent = `Erro: ${e.message}`;
+    // Em caso de erro, também limpar a mensagem ao digitar novamente
+    persistStatusUntilInput(form, statusEl);
   }
 }
 

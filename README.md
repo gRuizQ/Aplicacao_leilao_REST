@@ -37,6 +37,37 @@ Arquitetura focada em código essencial, separação de responsabilidades e manu
 - Validação de permissões de cliente no `ms_lance` (stub simples) antes de aceitar lances.
  - Distribuição de `leilao_vencedor` via RabbitMQ `fanout` (`vencedores_exchange`), com publicação em exchange no `ms_lance` e filas exclusivas por instância no `api_gateway` e `ms_pagamento`.
  - Consumidores de vencedor com `basic_qos(prefetch_count=1)`, `auto_ack=False`, `basic_ack` após sucesso e `basic_nack(..., requeue=True)` em falhas para maior confiabilidade.
+ - Consumidores do API Gateway agora possuem reconexão automática ao RabbitMQ com backoff e logs claros de inicialização/erro, evitando falhas silenciosas.
+ - Eventos de pagamento (`link_pagamento` e `status_pagamento`) são emitidos somente para o vencedor (client_id == id_vencedor).
+ - Publicação de lances no `ms_lance` refatorada: lances inválidos vão para a fila `lance_invalidado` (função `publicar_mensagem_lance`) e lances válidos são publicados no exchange `fanout` `lances` (função `publicar_lance_validado_exchange`). O `api_gateway` consome lances válidos via fila exclusiva vinculada ao exchange `lances`.
+
+### Eventos de Lance: Filas vs Exchange
+- `lance_invalidado`: fila direta (`routing_key='lance_invalidado'`). Consumido pelo `api_gateway` para broadcast de rejeições.
+- `lance_validado`: exchange `fanout` chamado `lances`. Permite que múltiplos serviços recebam o evento sem acoplamento a uma fila única.
+
+Exemplo de publicação no `ms_lance`:
+```python
+def publicar_mensagem_lance(routing_key, message_body):
+    with pika.BlockingConnection(pika.ConnectionParameters(host=RABBIT_HOST)) as connection:
+        channel = connection.channel()
+        channel.queue_declare(queue=routing_key)
+        channel.basic_publish(exchange='', routing_key=routing_key, body=json.dumps(message_body).encode('utf-8'))
+
+def publicar_lance_validado_exchange(message_body):
+    with pika.BlockingConnection(pika.ConnectionParameters(host=RABBIT_HOST)) as connection:
+        channel = connection.channel()
+        channel.exchange_declare(exchange='lances', exchange_type='fanout')
+        channel.basic_publish(exchange='lances', routing_key='', body=json.dumps(message_body).encode('utf-8'))
+```
+
+Consumo no `api_gateway`:
+```python
+ch.exchange_declare(exchange='lances', exchange_type='fanout')
+result_lances = ch.queue_declare(queue='', exclusive=True)
+_fila_lances_gateway = result_lances.method.queue
+ch.queue_bind(exchange='lances', queue=_fila_lances_gateway)
+ch.basic_consume(queue=_fila_lances_gateway, on_message_callback=cb_lance_validado, auto_ack=False)
+```
 
 ## 4. Pré-requisitos
 - Python 3.10+

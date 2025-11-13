@@ -74,7 +74,7 @@ def on_leilao_vencedor(ch, method, properties, body):
         data = json.loads(body.decode('utf-8'))
     except Exception as e:
         print(f"ms_pagamento: Erro ao processar leilão vencedor: {e}")
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+        ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
     id_leilao = data.get('id_leilao')
@@ -103,7 +103,7 @@ def on_leilao_vencedor(ch, method, properties, body):
         transaction_id = resp.get('transaction_id')
         payment_link = resp.get('payment_link')
     except Exception:
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+        ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
     if not transaction_id or not payment_link:
@@ -111,11 +111,7 @@ def on_leilao_vencedor(ch, method, properties, body):
         return
 
     # Publica link de pagamento
-    try:
-        publish_link_pagamento(id_leilao=id_leilao, id_vencedor=id_usuario, link=payment_link)
-    except Exception:
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-        return
+    publish_link_pagamento(id_leilao=id_leilao, id_vencedor=id_usuario, link=payment_link)
     
     ch.basic_ack(delivery_tag=method.delivery_tag)
 

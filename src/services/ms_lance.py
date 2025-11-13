@@ -13,31 +13,36 @@ leiloes_ativos: Dict[str, Dict[str, Any]] = {}
 ultimos_lances: Dict[str, Dict[str, Any]] = {}
 _lock = threading.Lock()
 
+# Configuração RabbitMQ
+RABBIT_HOST = 'localhost'
+
 # ---------------------------------------------
 # RabbitMQ: publishers e consumers
 # ---------------------------------------------
 
-def init_publisher():
+def publicar_mensagem_lance(routing_key: str, message_body: Dict[str, Any]):
+    """
+    Publica uma mensagem em uma fila específica (routing_key) usando exchange padrão.
+    Garante a declaração da fila e usa conexão curta por publicação.
+    """
     try:
-        conn = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
-        ch = conn.channel()
-        # Filas usadas para publicação
-        ch.queue_declare(queue='lance_validado')
-        ch.queue_declare(queue='lance_invalidado')
-        ch.queue_declare(queue='leilao_vencedor')
-        # Filas consumidas (garante existência caso ms_leilao não as declare primeiro)
-        ch.queue_declare(queue='leilao_iniciado')
-        ch.queue_declare(queue='leilao_finalizado')
-        return conn, ch
-    except Exception:
-        return None, None
-
-PUB_CONN, PUB_CH = init_publisher()
+        with pika.BlockingConnection(pika.ConnectionParameters(host=RABBIT_HOST)) as connection:
+            channel = connection.channel()
+            channel.queue_declare(queue=routing_key)
+            channel.basic_publish(
+                exchange='',
+                routing_key=routing_key,
+                body=json.dumps(message_body).encode('utf-8')
+            )
+            print(f"MS Lance: Publicado '{routing_key}' para leilão {message_body.get('id_leilao')}")
+    except pika.exceptions.AMQPError as e:
+        print(f"MS Lance: ERRO ao publicar '{routing_key}': {e}")
+        raise e
 
 
 def init_consumer():
     try:
-        conn = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+        conn = pika.BlockingConnection(pika.ConnectionParameters(host=RABBIT_HOST))
         ch = conn.channel()
         # Filas consumidas
         ch.queue_declare(queue='leilao_iniciado')
@@ -53,17 +58,24 @@ def init_consumer():
 SUB_CONN, SUB_CH = init_consumer()
 
 
-def publish_pub(queue_name: str, payload: Dict[str, Any]):
-    global PUB_CH
+def publicar_lance_validado_exchange(message_body: Dict[str, Any]):
+    """
+    Publica lance válido em um exchange fanout 'lances', permitindo múltiplos consumidores.
+    Usa conexão curta por publicação.
+    """
     try:
-        if PUB_CH is None:
-            return
-        body = json.dumps(payload).encode('utf-8')
-        PUB_CH.basic_publish(exchange='', routing_key=queue_name, body=body)
-    except Exception:
-        # Em caso de falha no RabbitMQ, desativa o publisher e segue sem interromper o fluxo REST
-        PUB_CH = None
-        return
+        with pika.BlockingConnection(pika.ConnectionParameters(host=RABBIT_HOST)) as connection:
+            channel = connection.channel()
+            channel.exchange_declare(exchange='lances', exchange_type='fanout')
+            channel.basic_publish(
+                exchange='lances',
+                routing_key='',
+                body=json.dumps(message_body).encode('utf-8')
+            )
+        print(f"MS Lance: Publicado no exchange 'lances' para leilão {message_body.get('id_leilao')}")
+    except pika.exceptions.AMQPError as e:
+        print(f"MS Lance: ERRO ao publicar no exchange 'lances': {e}")
+        raise e
 
 
 # ---------------------------------------------
@@ -119,6 +131,9 @@ def on_leilao_finalizado(ch, method, properties, body):
         'valor_do_lance': vencedor['valor_do_lance'] if vencedor else 0.0,
     }
     body_bytes = json.dumps(msg).encode('utf-8')
+
+    print(f"MS Lance: Publicado vencedor para leilão {leilao_id}: {msg}")
+
     # Publica na fila legada (compatibilidade)
     ch.basic_publish(exchange='', routing_key='leilao_vencedor', body=body_bytes)
     # Publica no exchange fanout para que múltiplos serviços recebam
@@ -148,6 +163,7 @@ _consumer_thread.start()
 def receber_lance():
     data = request.get_json(silent=True)
     if not data:
+        print(f"Recebido lance inválido: {data}")
         abort(400, description='JSON de entrada é obrigatório')
 
     id_leilao = data.get('id_leilao')
@@ -164,6 +180,9 @@ def receber_lance():
 
     with _lock:
         ativo = leiloes_ativos.get(id_leilao, {}).get('ativo', False)
+
+        print(f"Recebido Lance: id_leilao={id_leilao}, id_usuario={id_usuario}, valor_do_lance={valor_do_lance}, ativo={ativo}")
+
         if not ativo:
             # Lance inválido: leilão não está ativo
             msg_inv = {
@@ -171,7 +190,7 @@ def receber_lance():
                 'id_usuario': id_usuario,
                 'valor_do_lance': valor_do_lance,
             }
-            publish_pub('lance_invalidado', msg_inv)
+            publicar_mensagem_lance('lance_invalidado', msg_inv)
             return jsonify({'status': 'invalidado', 'motivo': 'leilao_inativo'}), 400
 
         # Verificação de permissões do usuário
@@ -181,7 +200,7 @@ def receber_lance():
                 'id_usuario': id_usuario,
                 'valor_do_lance': valor_do_lance,
             }
-            publish_pub('lance_invalidado', msg_inv)
+            publicar_mensagem_lance('lance_invalidado', msg_inv)
             return jsonify({'status': 'invalidado', 'motivo': 'sem_permissao'}), 403
 
         ultimo_valor = (ultimos_lances.get(id_leilao) or {}).get('valor_do_lance', float('-inf'))
@@ -192,7 +211,7 @@ def receber_lance():
                 'id_usuario': id_usuario,
                 'valor_do_lance': valor_do_lance,
             }
-            publish_pub('lance_invalidado', msg_inv)
+            publicar_mensagem_lance('lance_invalidado', msg_inv)
             return jsonify({'status': 'invalidado', 'motivo': 'valor_insuficiente', 'ultimo_lance': ultimo_valor}), 400
 
         # Lance válido
@@ -200,12 +219,15 @@ def receber_lance():
             'id_usuario': id_usuario,
             'valor_do_lance': valor_do_lance,
         }
+
+        print(f"Lance válido: últimos lances={ultimos_lances}")
+        
         msg_val = {
             'id_leilao': id_leilao,
             'id_usuario': id_usuario,
             'valor_do_lance': valor_do_lance,
         }
-        publish_pub('lance_validado', msg_val)
+        publicar_lance_validado_exchange(msg_val)
 
     return jsonify({'status': 'validado', 'id_leilao': id_leilao, 'id_usuario': id_usuario, 'valor_do_lance': valor_do_lance}), 201
 

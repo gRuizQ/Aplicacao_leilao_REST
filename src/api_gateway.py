@@ -304,8 +304,12 @@ def start_event_consumers():
             conn = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
             ch = conn.channel()
             # Declara filas de interesse
-            ch.queue_declare(queue='lance_validado')
             ch.queue_declare(queue='lance_invalidado')
+            # Exchange fanout para lances válidos; gateway usa fila exclusiva
+            ch.exchange_declare(exchange='lances', exchange_type='fanout')
+            result_lances = ch.queue_declare(queue='', exclusive=True)
+            _fila_lances_gateway = result_lances.method.queue
+            ch.queue_bind(exchange='lances', queue=_fila_lances_gateway)
             # Exchange fanout para vencedores; gateway usa fila exclusiva
             ch.exchange_declare(exchange='vencedores_exchange', exchange_type='fanout')
             result = ch.queue_declare(queue='', exclusive=True)
@@ -461,7 +465,8 @@ def start_event_consumers():
                     ch_.basic_ack(delivery_tag=method.delivery_tag)
 
 
-            ch.basic_consume(queue='lance_validado', on_message_callback=cb_lance_validado, auto_ack=False)
+            # Consome lances válidos via exchange 'lances'
+            ch.basic_consume(queue=_fila_lances_gateway, on_message_callback=cb_lance_validado, auto_ack=False)
             ch.basic_consume(queue='lance_invalidado', on_message_callback=cb_lance_invalidado, auto_ack=False)
             # Consome vencedores via exchange fanout com confirmação manual
             ch.basic_consume(queue=_fila_vencedores_gateway, on_message_callback=cb_leilao_vencedor, auto_ack=False)

@@ -113,6 +113,8 @@ def criar_leilao():
     data_inicio = parse_datetime(data_inicio_s)
     data_fim = parse_datetime(data_fim_s)
 
+    print(f"Recebido Leilão: descricao={descricao}, valor_minimo={valor_minimo}, data_inicio={data_inicio}, data_fim={data_fim}")
+
     if data_inicio >= data_fim:
         abort(400, description="'data_inicio' deve ser anterior a 'data_fim'")
 
